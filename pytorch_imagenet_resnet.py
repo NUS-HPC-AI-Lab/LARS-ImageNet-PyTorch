@@ -198,6 +198,8 @@ def get_model(args, num_steps_per_epoch):
         args.base_lr = args.base_lr * hvd.size() * args.batches_per_allreduce
     if args.lr_scaling.lower() == "sqrt":
         args.base_lr = math.sqrt(args.base_lr * hvd.size() * args.batches_per_allreduce)
+    if args.lr_scaling.lower() == "keep":
+        args.base_lr = args.base_lr
     if args.verbose:
         print('actual base_lr  ', args.base_lr)
 

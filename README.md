@@ -57,7 +57,8 @@ python pytorch_imagenet_resnet.py  \
 --base-lr 5.6568542494924 \
 --base-op lars \
 --bn-bias-separately \
---wd 0.0001
+--wd 0.0001 \
+--lr-scaling keep
 ```
 
 ## Reference
