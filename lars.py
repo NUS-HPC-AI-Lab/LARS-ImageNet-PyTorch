@@ -5,8 +5,8 @@ from torch import nn
 
 """
     We recommend using create_optimizer_lars and setting bn_bias_separately=True 
-    instead of using class Lars directly, which helps LARS skip weight decay for 
-    parameters in BatchNormalization and bias, and has better performance in general.
+    instead of using class Lars directly, which helps LARS skip parameters
+    in BatchNormalization and bias, and has better performance in general.
     Polynomial Warmup learning rate decay is also helpful for better performance in general.
 """
 
