@@ -19,7 +19,7 @@ We verified the implementation on the complete ImageNet-1K (ILSVRC2012) data set
 
 Training process with TensorBoard
 
-![Training process with TensorBoard](Training process with TensorBoard.jpg)
+![Training process with TensorBoard](https://github.com/binmakeswell/LARS-ImageNet-PyTorch/raw/main/Training%20process%20with%20TensorBoard.jpg)
 
 We set epochs = 90, weight decay = 0.0001, model = resnet50 and use NVIDIA Tesla V100 GPU for all experiments. For parameters with other batch size, please refer to [Large-Batch Training for LSTM and Beyond](https://arxiv.org/abs/1901.08256) Table 4.
 
