@@ -12,13 +12,14 @@ We verified the implementation on the complete ImageNet-1K (ILSVRC2012) data set
 
 | Batch Size | GPU Numbers |     Base LR     |  Warmup Epochs   | Test Accuracy | TensorBoard Color |
 | :--------: | :---------: | :-------------: | :--------------: | :-----------: | :---------------: |
-|    512     |      8      |  2<sup>2</sup>  | 10/2<sup>6</sup> |  **76.95%**   |        Red        |
-|    1024    |      8      | 2<sup>2.5</sup> | 10/2<sup>5</sup> |  **77.06%**   |       Green       |
-|    4096    |     32      | 2<sup>3.5</sup> | 10/2<sup>3</sup> |  **76.78%**   |       Gray        |
+|    512     |      8      |  2<sup>2</sup>  | 10/2<sup>6</sup> |  **76.95%**   |      Orange       |
+|    1024    |      8      | 2<sup>2.5</sup> | 10/2<sup>5</sup> |  **77.06%**   |     Dark Blue     |
+|    4096    |     32      | 2<sup>3.5</sup> | 10/2<sup>3</sup> |  **77.38%**   |    Light Blue     |
+|    8192    |     64      |  2<sup>4</sup>  | 10/2<sup>2</sup> |  **77.14%**   |        Red        |
 
 Training process with TensorBoard
 
-![Training process with TensorBoard](https://raw.githubusercontent.com/binmakeswell/LARS-ImageNet-PyTorch/main/Training%20process%20with%20TensorBoard.jpg)
+![Training process with TensorBoard](Training process with TensorBoard.jpg)
 
 We set epochs = 90, weight decay = 0.0001, model = resnet50 and use NVIDIA Tesla V100 GPU for all experiments. For parameters with other batch size, please refer to [Large-Batch Training for LSTM and Beyond](https://arxiv.org/abs/1901.08256) Table 4.
 
@@ -43,7 +44,7 @@ Note that we recommend using create_optimizer_lars and setting bn_bias_separatel
 
 ## Example Scripts
 
-Example scripts for training with 8 GPU and 1024 batch size on ImageNet-1k are provided.
+Example scripts for training with 8 GPUs and 1024 batch size on ImageNet-1k are provided.
 
 ```
 $ mpirun -np 8 \
@@ -60,6 +61,8 @@ python pytorch_imagenet_resnet.py  \
 --wd 0.0001 \
 --lr-scaling keep
 ```
+
+When the GPUs is insufficient, the accumulated gradient technology can be used, which can simulate more GPUs with limited GPUs, although it will extend the running time. To use it, you just need add --batches-per-allreduce N in above command, where N is the scale factor. For example, set N = 4 here can simulate 8 GPUs and 4096 batch size. 
 
 ## Reference
 

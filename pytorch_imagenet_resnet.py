@@ -11,13 +11,14 @@ import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
 import torch.optim as optim
 import torch.utils.data.distributed
-from torchvision import datasets, transforms
+from torchvision import datasets, transforms, models
 import horovod.torch as hvd
 from tqdm import tqdm
 from distutils.version import LooseVersion
-import imagenet_resnet as models
+
 from utils import *
 from lars import *
+from lamb import *
 
 warnings.filterwarnings("ignore", "(Possibly )?corrupt EXIF data", UserWarning)
 
@@ -66,7 +67,7 @@ def initialize():
                         help='base optimizer name')
     parser.add_argument('--bn-bias-separately', action='store_true', default=False,
                         help='skip bn and bias')
-    parser.add_argument('--lr-scaling', type=str, default='sqrt',
+    parser.add_argument('--lr-scaling', type=str, default='keep',
                         help='lr scaling method')
 
     parser.add_argument('--no-cuda', action='store_true', default=False,
@@ -81,7 +82,11 @@ def initialize():
 
     hvd.init()
     torch.manual_seed(args.seed)
+
     args.verbose = 1 if hvd.rank() == 0 else 0
+
+    print('hvd.rank()  ', hvd.rank())
+
     if args.verbose:
         print(args)
 
@@ -101,7 +106,7 @@ def initialize():
     args.log_dir = os.path.join(args.log_dir,
                                 "imagenet_{}_gpu_{}_{}_ebs{}_blr_{}_skip_{}_{}".format(
                                     args.model, hvd.size(), args.base_op,
-                                    args.batch_size * hvd.size(), args.base_lr, skip,
+                                    args.batch_size * hvd.size() * args.batches_per_allreduce, args.base_lr, skip,
                                     datetime.now().strftime('%Y-%m-%d_%H-%M-%S')))
     args.checkpoint_format = os.path.join(args.log_dir, args.checkpoint_format)
     os.makedirs(args.log_dir, exist_ok=True)
@@ -139,7 +144,11 @@ def get_datasets(args):
         kwargs = {'num_workers': 0, 'pin_memory': True} if args.cuda else {}
     else:
         torch.set_num_threads(4)
-        kwargs = {'num_workers': hvd.size(), 'pin_memory': True} if args.cuda else {}
+        num_workers_input = hvd.size()
+        # num_workers_input = 4
+        kwargs = {'num_workers': num_workers_input, 'pin_memory': True} if args.cuda else {}
+    if args.verbose:
+        print('actual num_workers  ', num_workers_input)
 
     train_dataset = datasets.ImageFolder(
         args.train_dir,
@@ -171,22 +180,16 @@ def get_datasets(args):
         val_dataset, batch_size=args.val_batch_size,
         sampler=val_sampler, **kwargs)
 
+    if args.verbose:
+        print('actual batch_size  ', args.batch_size * args.batches_per_allreduce * hvd.size())
+
     return train_sampler, train_loader, val_sampler, val_loader
 
 
 def get_model(args, num_steps_per_epoch):
-    if args.model.lower() == 'resnet34':
-        model = models.resnet34()
-    elif args.model.lower() == 'resnet50':
+    if args.model.lower() == 'resnet50':
+        # model = models_local.resnet50()
         model = models.resnet50()
-    elif args.model.lower() == 'resnet101':
-        model = models.resnet101()
-    elif args.model.lower() == 'resnet152':
-        model = models.resnet152()
-    elif args.model.lower() == 'resnext50':
-        model = models.resnext50_32x4d()
-    elif args.model.lower() == 'resnext101':
-        model = models.resnext101_32x8d()
     else:
         raise ValueError('Unknown model \'{}\''.format(args.model))
 
@@ -207,6 +210,9 @@ def get_model(args, num_steps_per_epoch):
         optimizer = create_optimizer_lars(model=model, lr=args.base_lr,
                                           momentum=args.momentum, weight_decay=args.wd,
                                           bn_bias_separately=args.bn_bias_separately)
+    elif args.base_op.lower() == "lamb":
+        optimizer = create_lamb_optimizer(model=model, lr=args.base_lr,
+                                          weight_decay=args.wd)
     else:
         optimizer = optim.SGD(model.parameters(), lr=args.base_lr,
                               momentum=args.momentum, weight_decay=args.wd)
@@ -237,6 +243,7 @@ def get_model(args, num_steps_per_epoch):
         lr_power = 2.0
     else:
         lr_power = 1.0
+
     lr_scheduler = PolynomialWarmup(optimizer, decay_steps=args.epochs * num_steps_per_epoch,
                                     warmup_steps=args.warmup_epochs * num_steps_per_epoch,
                                     end_lr=0.0, power=lr_power, last_epoch=-1)
@@ -258,7 +265,7 @@ def train(epoch, model, optimizer, lr_schedules,
               disable=not args.verbose) as t:
         for batch_idx, (data, target) in enumerate(train_loader):
             if args.cuda:
-                data, target = data.cuda(), target.cuda()
+                data, target = data.cuda(non_blocking=True), target.cuda(non_blocking=True)
             optimizer.zero_grad()
 
             for i in range(0, len(data), args.batch_size):
@@ -311,7 +318,7 @@ def validate(epoch, model, loss_func, val_loader, args):
         with torch.no_grad():
             for i, (data, target) in enumerate(val_loader):
                 if args.cuda:
-                    data, target = data.cuda(), target.cuda()
+                    data, target = data.cuda(non_blocking=True), target.cuda(non_blocking=True)
                 output = model(data)
                 val_loss.update(loss_func(output, target))
                 val_accuracy.update(accuracy(output, target))
