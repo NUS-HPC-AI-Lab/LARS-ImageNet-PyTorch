@@ -12,9 +12,9 @@ We verified the implementation on the complete ImageNet-1K (ILSVRC2012) data set
 
 | Batch Size | GPU Numbers |     Base LR     |  Warmup Epochs   | Test Accuracy | TensorBoard Color |
 | :--------: | :---------: | :-------------: | :--------------: | :-----------: | :---------------: |
-|    512     |      8      |  2<sup>2</sup>  | 10/2<sup>6</sup> |  **76.95%**   |      Orange       |
-|    1024    |      8      | 2<sup>2.5</sup> | 10/2<sup>5</sup> |  **77.06%**   |     Dark Blue     |
-|    4096    |     32      | 2<sup>3.5</sup> | 10/2<sup>3</sup> |  **77.38%**   |    Light Blue     |
+|    512     |      8      |  2<sup>2</sup>  | 10/2<sup>6</sup> |  **77.02%**   |       White       |
+|    1024    |      8      | 2<sup>2.5</sup> | 10/2<sup>5</sup> |  **76.96%**   |       Green       |
+|    4096    |     32      | 2<sup>3.5</sup> | 10/2<sup>3</sup> |  **77.38%**   |       Blue        |
 |    8192    |     64      |  2<sup>4</sup>  | 10/2<sup>2</sup> |  **77.14%**   |        Red        |
 
 Training process with TensorBoard
