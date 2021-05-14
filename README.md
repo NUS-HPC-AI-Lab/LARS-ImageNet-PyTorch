@@ -32,7 +32,7 @@ Thanks for computing resources from National Supercomputing Centre Singapore (NS
 ```
 from lars import *
 ...
-optimizer = create_optimizer_lars(model=model, lr=args.base_lr,
+optimizer = create_optimizer_lars(model=model, lr=args.base_lr,epsilon=args.epsilon,
                                 momentum=args.momentum, weight_decay=args.wd,
                                 bn_bias_separately=args.bn_bias_separately)
 ...
