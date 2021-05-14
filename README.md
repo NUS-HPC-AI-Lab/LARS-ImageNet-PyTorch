@@ -12,7 +12,7 @@ We verified the implementation on the complete ImageNet-1K (ILSVRC2012) data set
 
 | Effective Batchsize | Batchsize |     Base LR     |  Warmup Epochs   | Epsilon | Val Accuracy | TensorBoard Color |
 | :-----------------: | :-------: | :-------------: | :--------------: | :-----: | :----------: | :---------------: |
-|         512         |    128    |  2<sup>2</sup>  | 10/2<sup>6</sup> |  1e-5   |  **77.02%**  |    Light blue     |
+|         512         |    64     |  2<sup>2</sup>  | 10/2<sup>6</sup> |  1e-5   |  **77.02%**  |    Light blue     |
 |        1024         |    128    | 2<sup>2.5</sup> | 10/2<sup>5</sup> |  1e-5   |  **76.96%**  |       Brown       |
 |        4096         |    128    | 2<sup>3.5</sup> | 10/2<sup>3</sup> |  1e-5   |  **77.38%**  |      Orange       |
 |        8192         |    128    |  2<sup>4</sup>  | 10/2<sup>2</sup> |  1e-5   |  **77.14%**  |     Deep Blue     |
