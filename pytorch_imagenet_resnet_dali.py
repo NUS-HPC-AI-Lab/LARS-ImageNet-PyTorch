@@ -16,6 +16,13 @@ import horovod.torch as hvd
 from tqdm import tqdm
 from distutils.version import LooseVersion
 
+from nvidia.dali.pipeline import Pipeline
+from nvidia.dali.plugin.pytorch import DALIClassificationIterator, LastBatchPolicy
+import nvidia.dali.fn as fn
+import nvidia.dali.types as types
+import nvidia.dali.tfrecord as tfrec
+import glob
+
 from utils import *
 from lars import *
 from lamb import *
@@ -31,6 +38,8 @@ def initialize():
                         help='path to training data')
     parser.add_argument('--val-dir', default='/tmp/imagenet/ILSVRC2012_img_val/',
                         help='path to validation data')
+    parser.add_argument('--data-dir', default='/tmp/imagenet/',
+                        help='path to data data')
     parser.add_argument('--log-dir', default='./logs/imagenet',
                         help='tensorboard/checkpoint log directory')
     parser.add_argument('--checkpoint-format', default='checkpoint-{epoch}.pth.tar',
@@ -95,8 +104,8 @@ def initialize():
     if args.cuda:
         torch.cuda.set_device(hvd.local_rank())
         torch.cuda.manual_seed(args.seed)
-
-    cudnn.benchmark = True
+        cudnn.deterministic = True
+        cudnn.benchmark = False
 
     if args.bn_bias_separately:
         skip = "bn_bias"
@@ -139,53 +148,106 @@ def initialize():
     return args
 
 
+def dali_dataloader(
+        tfrec_filenames,
+        tfrec_idx_filenames,
+        shard_id=0, num_shards=1,
+        batch_size=64, num_threads=2,
+        image_size=224, num_workers=1, training=True):
+    pipe = Pipeline(batch_size=batch_size,
+                    num_threads=num_threads, device_id=0)
+    with pipe:
+        inputs = fn.readers.tfrecord(
+            path=tfrec_filenames,
+            index_path=tfrec_idx_filenames,
+            random_shuffle=training,
+            shard_id=shard_id,
+            num_shards=num_shards,
+            initial_fill=10000,
+            read_ahead=True,
+            pad_last_batch=True,
+            prefetch_queue_depth=num_workers,
+            name='Reader',
+            features={
+                'image/encoded': tfrec.FixedLenFeature((), tfrec.string, ""),
+                'image/class/label': tfrec.FixedLenFeature([1], tfrec.int64,  -1),
+            })
+        jpegs = inputs["image/encoded"]
+        if training:
+            images = fn.decoders.image_random_crop(
+                jpegs,
+                device="mixed",
+                output_type=types.RGB,
+                random_aspect_ratio=[0.8, 1.25],
+                random_area=[0.1, 1.0],
+                num_attempts=100)
+            images = fn.resize(images,
+                               device='gpu',
+                               resize_x=image_size,
+                               resize_y=image_size,
+                               interp_type=types.INTERP_TRIANGULAR)
+            mirror = fn.random.coin_flip(probability=0.5)
+        else:
+            images = fn.decoders.image(jpegs,
+                                       device='mixed',
+                                       output_type=types.RGB)
+            images = fn.resize(images,
+                               device='gpu',
+                               size=int(image_size / 0.875),
+                               mode="not_smaller",
+                               interp_type=types.INTERP_TRIANGULAR)
+            mirror = False
+
+        images = fn.crop_mirror_normalize(
+            images.gpu(),
+            dtype=types.FLOAT,
+            crop=(image_size, image_size),
+            mean=[0.485 * 255, 0.456 * 255, 0.406 * 255],
+            std=[0.229 * 255, 0.224 * 255, 0.225 * 255],
+            mirror=mirror)
+        label = inputs["image/class/label"] - 1  # 0-999
+        label = fn.element_extract(label, element_map=0)  # Flatten
+        label = label.gpu()
+        pipe.set_outputs(images, label)
+
+    pipe.build()
+    last_batch_policy = LastBatchPolicy.DROP if training else LastBatchPolicy.PARTIAL
+    loader = DALIClassificationIterator(
+        pipe, reader_name="Reader", auto_reset=True, last_batch_policy=last_batch_policy)
+    return loader
+
+
 def get_datasets(args):
-    # Horovod: limit # of CPU threads to be used per worker.
-    if args.single_threaded:
-        torch.set_num_threads(4)
-        kwargs = {'num_workers': 0, 'pin_memory': True} if args.cuda else {}
-    else:
-        torch.set_num_threads(4)
-        num_workers_input = hvd.size()
-        # num_workers_input = 4
-        kwargs = {'num_workers': num_workers_input, 'pin_memory': True} if args.cuda else {}
-    if args.verbose:
-        print('actual num_workers  ', num_workers_input)
+    num_shards = hvd.size()
+    shard_id = hvd.rank()
+    num_workers = 1
+    num_threads = 2
+    root = args.data_dir
 
-    train_dataset = datasets.ImageFolder(
-        args.train_dir,
-        transform=transforms.Compose([
-            transforms.RandomResizedCrop(224),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                 std=[0.229, 0.224, 0.225])]))
-    val_dataset = datasets.ImageFolder(
-        args.val_dir,
-        transform=transforms.Compose([
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                 std=[0.229, 0.224, 0.225])]))
-
-    # Horovod: use DistributedSampler to partition data among workers. Manually specify
-    # `num_replicas=hvd.size()` and `rank=hvd.rank()`.
-    train_sampler = torch.utils.data.distributed.DistributedSampler(
-        train_dataset, num_replicas=hvd.size(), rank=hvd.rank())
-    train_loader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=args.batch_size * args.batches_per_allreduce,
-        sampler=train_sampler, **kwargs)
-    val_sampler = torch.utils.data.distributed.DistributedSampler(
-        val_dataset, num_replicas=hvd.size(), rank=hvd.rank())
-    val_loader = torch.utils.data.DataLoader(
-        val_dataset, batch_size=args.val_batch_size,
-        sampler=val_sampler, **kwargs)
-
+    train_pat = os.path.join(root, 'train/*')
+    train_idx_pat = os.path.join(root, 'idx_files/train/*')
+    train_loader = dali_dataloader(sorted(glob.glob(train_pat)),
+                                   sorted(glob.glob(train_idx_pat)),
+                                   shard_id=shard_id,
+                                   num_shards=num_shards,
+                                   batch_size=args.batch_size * args.batches_per_allreduce,
+                                   num_workers=num_workers,
+                                   num_threads=num_threads,
+                                   training=True)
+    test_pat = os.path.join(root, 'validation/*')
+    test_idx_pat = os.path.join(root, 'idx_files/validation/*')
+    val_loader = dali_dataloader(sorted(glob.glob(test_pat)),
+                                 sorted(glob.glob(test_idx_pat)),
+                                 shard_id=shard_id,
+                                 num_shards=num_shards,
+                                 batch_size=args.val_batch_size,
+                                 num_workers=num_workers,
+                                 num_threads=num_threads,
+                                 training=False)
     if args.verbose:
         print('actual batch_size  ', args.batch_size * args.batches_per_allreduce * hvd.size())
 
-    return train_sampler, train_loader, val_sampler, val_loader
+    return train_loader, val_loader
 
 
 def get_model(args, num_steps_per_epoch):
@@ -256,32 +318,33 @@ def get_model(args, num_steps_per_epoch):
 
 
 def train(epoch, model, optimizer, lr_schedules,
-          loss_func, train_sampler, train_loader, args):
+          loss_func, train_loader, args):
     model.train()
-    train_sampler.set_epoch(epoch)
+    # train_sampler.set_epoch(epoch)
     train_loss = Metric('train_loss')
     train_accuracy = Metric('train_accuracy')
 
     with tqdm(total=len(train_loader),
               desc='Epoch {:3d}/{:3d}'.format(epoch + 1, args.epochs),
               disable=not args.verbose) as t:
-        for batch_idx, (data, target) in enumerate(train_loader):
-            if args.cuda:
-                data, target = data.cuda(non_blocking=True), target.cuda(non_blocking=True)
+        for batch_idx, data in enumerate(train_loader):
+            input, target = data[0]['data'], data[0]['label']
+            # if args.cuda:
+            #     data, target = data.cuda(non_blocking=True), target.cuda(non_blocking=True)
             optimizer.zero_grad()
 
-            for i in range(0, len(data), args.batch_size):
-                data_batch = data[i:i + args.batch_size]
+            for i in range(0, len(input), args.batch_size):
+                data_batch = input[i:i + args.batch_size]
                 target_batch = target[i:i + args.batch_size]
                 output = model(data_batch)
 
                 loss = loss_func(output, target_batch)
+                loss = loss / args.batches_per_allreduce
 
                 with torch.no_grad():
                     train_loss.update(loss)
                     train_accuracy.update(accuracy(output, target_batch))
 
-                loss.div_(math.ceil(float(len(data)) / args.batch_size))
                 loss.backward()
 
             optimizer.synchronize()
@@ -289,8 +352,8 @@ def train(epoch, model, optimizer, lr_schedules,
             with optimizer.skip_synchronize():
                 optimizer.step()
 
-            t.set_postfix_str("loss: {:.4f}, acc: {:.2f}%".format(
-                train_loss.avg.item(), 100 * train_accuracy.avg.item()))
+            t.set_postfix_str("loss: {:.4f}, acc: {:.2f}%, lr: {:.4f}".format(
+                train_loss.avg.item(), 100 * train_accuracy.avg.item(),  optimizer.param_groups[0]['lr']))
             t.update(1)
 
             lr_schedules.step()
@@ -318,10 +381,11 @@ def validate(epoch, model, loss_func, val_loader, args):
               desc='             '.format(epoch + 1, args.epochs),
               disable=not args.verbose) as t:
         with torch.no_grad():
-            for i, (data, target) in enumerate(val_loader):
-                if args.cuda:
-                    data, target = data.cuda(non_blocking=True), target.cuda(non_blocking=True)
-                output = model(data)
+            for i, data in enumerate(val_loader):
+                input, target = data[0]['data'], data[0]['label']
+                # if args.cuda:
+                #     data, target = data.cuda(non_blocking=True), target.cuda(non_blocking=True)
+                output = model(input)
                 val_loss.update(loss_func(output, target))
                 val_accuracy.update(accuracy(output, target))
 
@@ -341,11 +405,17 @@ def validate(epoch, model, loss_func, val_loader, args):
 
 
 if __name__ == '__main__':
-    torch.multiprocessing.set_start_method('spawn')
 
     args = initialize()
 
-    train_sampler, train_loader, _, val_loader = get_datasets(args)
+    if args.single_threaded:
+        print('Not use torch.multiprocessing.set_start_method')
+    else:
+        # torch.multiprocessing.set_start_method('spawn')
+        # torch.multiprocessing.set_start_method('forkserver')
+        torch.multiprocessing.set_start_method('spawn')
+
+    train_loader, val_loader = get_datasets(args=args)
 
     num_steps_per_epoch = len(train_loader)
 
@@ -357,8 +427,8 @@ if __name__ == '__main__':
     start = time.time()
 
     for epoch in range(args.resume_from_epoch, args.epochs):
-        train(epoch, model, opt, lr_schedules,
-              loss_func, train_sampler, train_loader, args)
+        train(epoch=epoch, model=model, optimizer=opt, lr_schedules=lr_schedules,
+              loss_func=loss_func, train_loader=train_loader, args=args)
         validate(epoch, model, loss_func, val_loader, args)
         save_checkpoint(model, opt, args.checkpoint_format, epoch)
 

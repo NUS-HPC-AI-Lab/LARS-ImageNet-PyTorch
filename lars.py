@@ -11,19 +11,21 @@ from torch import nn
 """
 
 
-def create_optimizer_lars(model, lr, momentum, weight_decay, bn_bias_separately):
+def create_optimizer_lars(model, lr, momentum, weight_decay, bn_bias_separately, epsilon):
     if bn_bias_separately:
         optimizer = Lars([
             dict(params=get_common_parameters(model, exclude_func=get_norm_bias_parameters)),
             dict(params=get_norm_bias_parameters(model), weight_decay=0, lars=False)],
             lr=lr,
             momentum=momentum,
-            weight_decay=weight_decay)
+            weight_decay=weight_decay,
+            epsilon=epsilon)
     else:
         optimizer = Lars(model.parameters(),
                          lr=lr,
                          momentum=momentum,
-                         weight_decay=weight_decay)
+                         weight_decay=weight_decay,
+                         epsilon=epsilon)
     return optimizer
 
 
@@ -47,7 +49,7 @@ class Lars(Optimizer):
             momentum=0,
             eeta=1e-3,
             weight_decay=0,
-            epsilon=1e-5
+            epsilon=0.0
     ) -> None:
         if not isinstance(lr, float) or lr < 0.0:
             raise ValueError("Invalid learning rate: {}".format(lr))
@@ -57,7 +59,7 @@ class Lars(Optimizer):
             raise ValueError("Invalid weight_decay value: {}".format(weight_decay))
         if eeta <= 0 or eeta > 1:
             raise ValueError("Invalid eeta value: {}".format(eeta))
-        if epsilon <= 0:
+        if epsilon < 0:
             raise ValueError("Invalid epsilon value: {}".format(epsilon))
         defaults = dict(lr=lr, momentum=momentum,
                         weight_decay=weight_decay, eeta=eeta, epsilon=epsilon, lars=True)
@@ -73,7 +75,8 @@ class Lars(Optimizer):
         """
         loss = None
         if closure is not None:
-            loss = closure()
+            with torch.enable_grad():
+                loss = closure()
 
         for group in self.param_groups:
             weight_decay = group['weight_decay']
