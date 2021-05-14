@@ -23,7 +23,7 @@ Training process with TensorBoard
 
 ![Training process with TensorBoard](Training-process-with-TensorBoard.jpg)
 
-We set epochs = 90, weight decay = 0.0001, model = resnet50 and use NVIDIA Tesla V100/P100 GPU for all experiments. 
+We set epochs = 90, weight decay = 0.0001, model = resnet50 and use NVIDIA Tesla V100/P100 GPU for all experiments. We do not finetune the hyperparameters, maybe you can get better performance using others.
 
 Thanks for computing resources from National Supercomputing Centre Singapore (NSCC), Texas Advanced Computing Center (TACC) and Swiss National Supercomputing Centre (CSCS).
 
