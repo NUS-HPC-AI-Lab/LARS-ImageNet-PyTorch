@@ -155,7 +155,7 @@ def dali_dataloader(
         batch_size=64, num_threads=2,
         image_size=224, num_workers=1, training=True):
     pipe = Pipeline(batch_size=batch_size,
-                    num_threads=num_threads, device_id=0)
+                    num_threads=num_threads, device_id=hvd.local_rank())
     with pipe:
         inputs = fn.readers.tfrecord(
             path=tfrec_filenames,
